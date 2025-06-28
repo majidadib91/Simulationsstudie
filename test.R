@@ -1,5 +1,6 @@
-#Mode Imputation MCAR
+#Mode Imputation  MCAR
 #Loading libraries
+
 library(missMethods)
 library(SimCorrMix)
 library(vcd)
@@ -65,17 +66,15 @@ for (rho_1 in rho_1){
     
     
     # deleting data
-    
-    
-    
-    
     sim_mcar_list <- vector("list", reps)
+    delete_cols <- seq(2,m,2)
+    
     
     for (i in 1:reps) {
       df0 <- sim_data_list[[i]]$data
-      df_mcar <- delete_MCAR(df0, p = p_miss)
+      df_mcar <- delete_MCAR(df0, p = p_miss, cols_mis = delete_cols)
       sim_mcar_list[[i]] <- list(
-        data   = df_mcar
+        data = df_mcar
       )
     }
     
