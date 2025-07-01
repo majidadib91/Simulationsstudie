@@ -1,192 +1,140 @@
-#Mode Imputation  MCAR
-#Loading libraries
-
+# It looks like working but there is differences
+# Load libraries
 library(missMethods)
 library(SimCorrMix)
 library(vcd)
 
+# Define parameters
+n <- 100
+m_values <- c(6,500)
+reps <- 100
+rho_1 <- c(0.1, 0.4, 0.7)
+p <- seq(0.1, 0.5, 0.1)
+mechanisms <- c("mcar", "mar", "mnar")
 
-# Definig parameters
-n      <- 100
-m      <- 6
-reps   <- 100
-rho_1  <- c(0.1,0.4,0.7)
-p <- seq(0.1,0.5,0.1)
+# Initialize result
+simulation_summary <- data.frame()
 
-sim_data_list <- vector("list", reps)
-simulation_summary_mcar_mode <-vector()
+# Mode function
+get_mode <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return(NA)
+  tbl <- table(x)
+  names(tbl)[which.max(tbl)][1]
+}
 
-
-# Defining rho matrix
-for (rho_1 in rho_1){
-  rho_matirx  = matrix(rho_1,m,m) ; diag(rho_matirx) <- 1
+# Start simulation loop
+for (m in m_values) {
   
-  for (p_miss in p){
+  for (rho_val in rho_1) {
     
+    rho_matrix <- matrix(rho_val, m, m)
+    diag(rho_matrix) <- 1
     
-    
-    
-    
-    
-    
-    
-    
-    # Generating the datasets
-    for (i in 1:reps){
-      set.seed(i)
-      levels <- sample(2:4, m, replace = TRUE)
-      # Build support & marginal lists
-      support  <- lapply(levels, function(k) 1:k)
-      marginal <- lapply(levels, function(k) {
-        probs <- rep(1/k, k)
-        cumsum(probs) - 1e-10
-        
-        
-        
-      })
-      sim <- corrvar2(
-        k_cat = m,         
-        k_cont = 0,        
-        marginal = marginal,
-        support = support,
-        method = "Polynomial",
-        means = NULL,
-        vars = NULL,
-        rho = rho_matirx,
-        n = n
-      )
-      nominal_data <- as.data.frame(sim$Y_cat)
-      nominal_data[] <- lapply(nominal_data, factor)
+    for (p_miss in p) {
       
-      # Save  the data used
-      sim_data_list[[i]] <- list(
-        data = nominal_data)
-    }
-    
-    
-    
-    # deleting data
-    sim_mcar_list <- vector("list", reps)
-    delete_cols <- seq(2,m,2)
-    
-    
-    for (i in 1:reps) {
-      df0 <- sim_data_list[[i]]$data
-      df_mcar <- delete_MCAR(df0, p = p_miss, cols_mis = delete_cols)
-      sim_mcar_list[[i]] <- list(
-        data = df_mcar
-      )
-    }
-    
-    # mode imputation
-    
-    
-    get_mode <- function(x) {
-      # Exclude NA values
-      x <- x[!is.na(x)]
-      if (length(x) == 0) return(NA)  # If all NA, return NA
-      # Get the most frequent value
-      tbl <- table(x)
-      names(tbl)[which.max(tbl)][1]  # Pick first mode in case of ties
-    }
-    
-    # Impute missing values using mode for each dataset
-    for (i in 1:reps) {
-      # Extract the data component
-      data <- sim_mcar_list[[i]]$data
-      # Create a copy for imputation
-      imputed_data <- data
-      # Apply mode imputation to each column
-      for (j in 1:ncol(data)) {
-        # Find indices of NA values
-        na_indices <- is.na(data[[j]])
-        if (any(na_indices)) {
-          # Impute NA with mode of the column
-          mode_val <- get_mode(data[[j]])
-          imputed_data[[j]][na_indices] <- mode_val
-        }
-      }
-      # Ensure imputed column remains a factor with original levels
-      imputed_data[] <- lapply(imputed_data, as.factor)
-      # Store imputed data in a new component
-      sim_data_list[[i]]$imputed_data <- imputed_data
-    }
-    
-    
-    
-    
-    # Step 3a:  PFC
-    total_falsely_imputed <- 0
-    for (i in 1:reps){
+      sim_data_list <- vector("list", reps)
+      delete_cols <- seq(2, m, 2)
       
-      falsely_imputed <- sum(sim_data_list[[i]]$imputed_data != sim_data_list[[i]]$data)
-      total_falsely_imputed <- total_falsely_imputed + falsely_imputed
-    }
-    
-    pfc <- round(total_falsely_imputed/(n*m*reps),4)
-    
-    
-    
-    
-    
-    # Step 3b: Cramér's V and RMSE calculation
-    rmse_values <- numeric()
-    
-    for (i in 1:reps) {
-      sim_data <- sim_data_list[[i]]$data
-      imp_data <- sim_data_list[[i]]$imputed_data
-      
-      # Initialize vectors to store Cramér's V for all column pairs
-      v_sim <- numeric()
-      v_imp <- numeric()
-      
-      # Calculate Cramér's V for each pair of columns
-      for (j in 1:(m-1)) {
-        for (k in (j+1):m) {
-          sim_table <- table(sim_data[[j]], sim_data[[k]])
-          imp_table <- table(imp_data[[j]], imp_data[[k]])
-          v_sim <- c(v_sim, assocstats(sim_table)$cramer)
-          v_imp <- c(v_imp, assocstats(imp_table)$cramer)
-        }
+      # Step 1: Generate complete data
+      for (i in 1:reps) {
+        set.seed(i)
+        levels <- sample(2:4, m, replace = TRUE)
+        support <- lapply(levels, function(k) 1:k)
+        marginal <- lapply(levels, function(k) {
+          probs <- rep(1/k, k)
+          cumsum(probs) - 1e-10
+        })
+        sim <- corrvar2(
+          k_cat = m,
+          k_cont = 0,
+          marginal = marginal,
+          support = support,
+          method = "Polynomial",
+          rho = rho_matrix,
+          n = n
+        )
+        nominal_data <- as.data.frame(sim$Y_cat)
+        nominal_data[] <- lapply(nominal_data, factor)
+        sim_data_list[[i]] <- list(data = nominal_data)
       }
       
-      # Calculate RMSE for this dataset
-      diff_squared <- (v_imp - v_sim)^2
-      rmse <- sqrt(2 / (m * (m-1)) * sum(diff_squared, na.rm = TRUE))
-      rmse_values[i] <- rmse
+      # Step 2: Add 3 types of missingness
+      for (i in 1:reps) {
+        df0 <- sim_data_list[[i]]$data
+        
+        df_mcar <- delete_MCAR(df0, p = p_miss, cols_mis = delete_cols)
+        df_mar  <- delete_MAR_1_to_x(df0, p = p_miss, cols_mis = delete_cols,
+                                     cols_ctrl = delete_cols - 1, x = 3)
+        df_mnar <- delete_MNAR_1_to_x(df0, p = p_miss, cols_mis = delete_cols, x = 3)
+        
+        sim_data_list[[i]]$mcar <- df_mcar
+        sim_data_list[[i]]$mar  <- df_mar
+        sim_data_list[[i]]$mnar <- df_mnar
+      }
       
-      # Store average Cramér's V for this dataset (optional)
-      sim_data_list[[i]]$mean_cramers_v_sim <- mean(v_sim, na.rm = TRUE)
-      sim_data_list[[i]]$mean_cramers_v_imp <- mean(v_imp, na.rm = TRUE)
+      # Step 3: Impute and evaluate each mechanism
+      for (mech in mechanisms) {
+        falsely_imputed_total <- 0
+        rmse_values <- numeric(reps)
+        
+        for (i in 1:reps) {
+          df0 <- sim_data_list[[i]]$data
+          df_mis <- sim_data_list[[i]][[mech]]
+          
+          # Mode imputation
+          imputed_data <- df_mis
+          for (j in 1:m) {
+            na_indices <- is.na(imputed_data[[j]])
+            if (any(na_indices)) {
+              mode_val <- get_mode(imputed_data[[j]])
+              imputed_data[[j]][na_indices] <- mode_val
+            }
+          }
+          imputed_data[] <- lapply(imputed_data, as.factor)
+          sim_data_list[[i]][[paste0(mech, "_imp")]] <- imputed_data
+          
+          # PFC
+          falsely_imputed <- sum(imputed_data != df0, na.rm = TRUE)
+          falsely_imputed_total <- falsely_imputed_total + falsely_imputed
+          
+          # RMSE using Cramér’s V
+          v_sim <- numeric()
+          v_imp <- numeric()
+          for (j in 1:(m - 1)) {
+            for (k in (j + 1):m) {
+              sim_table <- table(df0[[j]], df0[[k]])
+              imp_table <- table(imputed_data[[j]], imputed_data[[k]])
+              v_sim <- c(v_sim, assocstats(sim_table)$cramer)
+              v_imp <- c(v_imp, assocstats(imp_table)$cramer)
+            }
+          }
+          rmse <- sqrt(2 / (m * (m - 1)) * sum((v_imp - v_sim)^2, na.rm = TRUE))
+          rmse_values[i] <- rmse
+        }
+        
+        # Step 4: Store results
+        pfc <- round(falsely_imputed_total / (n * m * reps), 4)
+        mean_rmse <- round(mean(rmse_values, na.rm = TRUE), 4)
+        
+        new_row <- data.frame(
+          mechanism = toupper(mech),
+          wiederholungen = reps,
+          n = n,
+          m = m,
+          rho_1 = rho_val,
+          verteilung = "gleich",
+          Ausprägungen = "wenig",
+          p_miss = p_miss,
+          pfc = pfc,
+          mean_rmse = mean_rmse
+        )
+        simulation_summary <- rbind(simulation_summary, new_row)
+        cat("Done: m =", m, "rho =", rho_val, "p =", p_miss, "mech =", toupper(mech), "\n")
+      }
     }
-    
-    # Calculate average RMSE across all repetitions
-    mean_rmse <- round(mean(rmse_values, na.rm = TRUE),4)
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    new_row <- data.frame(
-      wiederholungen = reps,
-      n = n,
-      m = m,
-      rho_1 = rho_1,
-      verteilung = "gleich",
-      Ausprägungen = "wenig",
-      p_miss = p_miss,
-      pfc = pfc,
-      mean_rmse = mean_rmse
-    )
-    simulation_summary_mcar_mode<- rbind(simulation_summary_mcar_mode,new_row)
-    
-    
-    
   }
 }
 
+# Final result
+print(simulation_summary)
