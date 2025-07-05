@@ -1,21 +1,27 @@
-# It looks like working but there is differences
-# Load libraries
+# chat gpt with all variables
+#Mar not precise
+#missForest and Hot deck to be added
+# Load required libraries
 library(missMethods)
 library(SimCorrMix)
 library(vcd)
+library(dplyr)
 
-# Define parameters
-n <- 100
-m_values <- c(6,500)
-reps <- 100
-rho_1 <- c(0.1, 0.4, 0.7)
-p <- seq(0.1, 0.5, 0.1)
-mechanisms <- c("mcar", "mar", "mnar")
+#–– 1. Define simulation parameters ––
+reps              <- 1
+n_values          <- c(100,500)          # e.g. c(100, 500)
+m_values          <- c(6,30)           # e.g. c(6, 30)
+rho_vals          <- c(0.1,0.4,0.7)         # e.g. c(0.1, 0.4, 0.7)
+p_vals            <- seq(0.1,0.5,0.1)         # e.g. seq(0.1, 0.5, 0.1)
+level_scenarios   <- c("few", "many")
+dist_scenarios    <- c("balanced", "unbalanced")
+simulation_count  <-reps*length(n_values)*length(m_values)*length(rho_vals)*length(level_scenarios)*length(dist_scenarios)
+start_time <- Sys.time()
 
-# Initialize result
-simulation_summary <- data.frame()
 
-# Mode function
+#–– 2. Helpers ––
+
+# 2a) mode function
 get_mode <- function(x) {
   x <- x[!is.na(x)]
   if (length(x) == 0) return(NA)
@@ -23,118 +29,173 @@ get_mode <- function(x) {
   names(tbl)[which.max(tbl)][1]
 }
 
-# Start simulation loop
-for (m in m_values) {
+# 2b) mode‐imputation
+impute_mode <- function(df) {
+  df_imp <- df
+  for (j in seq_along(df_imp)) {
+    m_j <- get_mode(df_imp[[j]])
+    df_imp[[j]][is.na(df_imp[[j]])] <- m_j
+  }
+  df_imp
+}
+
+# 2c) count false imputations
+count_false <- function(orig, deleted, imputed) {
+  mask <- is.na(deleted)
+  sum(imputed[mask] != orig[mask])
+}
+
+# 2d) build marginal CDF for one variable
+make_marginal <- function(k, balanced = TRUE) {
+  if (balanced) {
+    probs <- rep(1/k, k)
+  } else {
+    # first k−1 levels get 0.1 each, last level takes the rest
+    probs <- c(rep(0.1, k-1), 1 - 0.1*(k-1))
+  }
+  cumsum(probs) - 1e-10
+}
+
+#–– 3. Prepare storage for raw false‐counts ––
+simulation_summary <- data.frame(
+  rep         = integer(),
+  n           = integer(),
+  m           = integer(),
+  rho         = numeric(),
+  p           = numeric(),
+  levels      = character(),   # "few" or "many"
+  dist_form   = character(),   # "balanced" or "unbalanced"
+  mechanism   = character(),   # "MCAR", "MAR", "MNAR"
+  false_count = integer(),
+  stringsAsFactors = FALSE
+)
+
+#–– 4. Main simulation loops ––
+for (rep in seq_len(reps)) {
+  set.seed(1233 + rep)
   
-  for (rho_val in rho_1) {
+  for (n in n_values) for (m in m_values) {
     
-    rho_matrix <- matrix(rho_val, m, m)
-    diag(rho_matrix) <- 1
+    # which columns to delete
+    delete_cols <- seq(2, m, by = 2)
     
-    for (p_miss in p) {
+    for (levels_sce in level_scenarios) {
+      # choose how many levels each variable has
+      if (levels_sce == "few") {
+        levels_vec <- sample(2:4, m, replace = TRUE)
+      } else {
+        levels_vec <- sample(5:7, m, replace = TRUE)
+      }
       
-      sim_data_list <- vector("list", reps)
-      delete_cols <- seq(2, m, 2)
-      
-      # Step 1: Generate complete data
-      for (i in 1:reps) {
-        set.seed(i)
-        levels <- sample(2:4, m, replace = TRUE)
-        support <- lapply(levels, function(k) 1:k)
-        marginal <- lapply(levels, function(k) {
-          probs <- rep(1/k, k)
-          cumsum(probs) - 1e-10
-        })
-        sim <- corrvar2(
-          k_cat = m,
-          k_cont = 0,
-          marginal = marginal,
-          support = support,
-          method = "Polynomial",
-          rho = rho_matrix,
-          n = n
+      for (dist_sce in dist_scenarios) {
+        # build marginal CDFs for each variable
+        balanced_flag <- (dist_sce == "balanced")
+        marginal_list <- mapply(
+          make_marginal,
+          k        = levels_vec,
+          balanced = balanced_flag,
+          SIMPLIFY = FALSE
         )
-        nominal_data <- as.data.frame(sim$Y_cat)
-        nominal_data[] <- lapply(nominal_data, factor)
-        sim_data_list[[i]] <- list(data = nominal_data)
-      }
-      
-      # Step 2: Add 3 types of missingness
-      for (i in 1:reps) {
-        df0 <- sim_data_list[[i]]$data
+        support_list <- lapply(levels_vec, seq_len)
         
-        df_mcar <- delete_MCAR(df0, p = p_miss, cols_mis = delete_cols)
-        df_mar  <- delete_MAR_1_to_x(df0, p = p_miss, cols_mis = delete_cols,
-                                     cols_ctrl = delete_cols - 1, x = 3)
-        df_mnar <- delete_MNAR_1_to_x(df0, p = p_miss, cols_mis = delete_cols, x = 3)
-        
-        sim_data_list[[i]]$mcar <- df_mcar
-        sim_data_list[[i]]$mar  <- df_mar
-        sim_data_list[[i]]$mnar <- df_mnar
-      }
-      
-      # Step 3: Impute and evaluate each mechanism
-      for (mech in mechanisms) {
-        falsely_imputed_total <- 0
-        rmse_values <- numeric(reps)
-        
-        for (i in 1:reps) {
-          df0 <- sim_data_list[[i]]$data
-          df_mis <- sim_data_list[[i]][[mech]]
+        for (rho in rho_vals) {
+          # build correlation matrix
+          rho_mat <- matrix(rho, nrow = m, ncol = m)
+          diag(rho_mat) <- 1
           
-          # Mode imputation
-          imputed_data <- df_mis
-          for (j in 1:m) {
-            na_indices <- is.na(imputed_data[[j]])
-            if (any(na_indices)) {
-              mode_val <- get_mode(imputed_data[[j]])
-              imputed_data[[j]][na_indices] <- mode_val
-            }
+          # generate complete categorical data
+          sim <- corrvar2(
+            k_cat    = m,
+            k_cont   = 0,
+            marginal = marginal_list,
+            support  = support_list,
+            method   = "Polynomial",
+            rho      = rho_mat,
+            n        = n
+          )
+          complete_data <- as.data.frame(sim$Y_cat)
+          complete_data[] <- lapply(complete_data, factor)
+          
+          #print remaining datasets count
+          cat("Remaining Datasets:")
+          simulation_count <- simulation_count-1
+          print(simulation_count)
+          
+          for (p_miss in p_vals) {
+            # apply missingness
+            df_mcar <- delete_MCAR  (complete_data, p = p_miss, cols_mis = delete_cols)
+            df_mar  <- delete_MAR_1_to_x(complete_data, p = p_miss,
+                                         cols_mis = delete_cols,
+                                         cols_ctrl = delete_cols - 1, x = 3)
+            df_mnar <- delete_MNAR_1_to_x(complete_data, p = p_miss,
+                                          cols_mis = delete_cols, x = 3)
+            
+            # impute
+            imp_mcar <- impute_mode(df_mcar)
+            imp_mar  <- impute_mode(df_mar)
+            imp_mnar <- impute_mode(df_mnar)
+            
+            # count errors
+            f_mcar <- count_false(complete_data, df_mcar, imp_mcar)
+            f_mar  <- count_false(complete_data, df_mar,  imp_mar)
+            f_mnar <- count_false(complete_data, df_mnar, imp_mnar)
+            
+            # record
+            simulation_summary <- bind_rows(
+              simulation_summary,
+              data.frame(
+                rep         = rep, n = n, m = m, rho = rho, p = p_miss,
+                levels      = levels_sce,
+                dist_form   = dist_sce,
+                mechanism   = "MCAR",
+                false_count = f_mcar,
+                stringsAsFactors = FALSE
+              ),
+              data.frame(
+                rep         = rep, n = n, m = m, rho = rho, p = p_miss,
+                levels      = levels_sce,
+                dist_form   = dist_sce,
+                mechanism   = "MAR",
+                false_count = f_mar,
+                stringsAsFactors = FALSE
+              ),
+              data.frame(
+                rep         = rep, n = n, m = m, rho = rho, p = p_miss,
+                levels      = levels_sce,
+                dist_form   = dist_sce,
+                mechanism   = "MNAR",
+                false_count = f_mnar,
+                stringsAsFactors = FALSE
+              )
+            )
           }
-          imputed_data[] <- lapply(imputed_data, as.factor)
-          sim_data_list[[i]][[paste0(mech, "_imp")]] <- imputed_data
-          
-          # PFC
-          falsely_imputed <- sum(imputed_data != df0, na.rm = TRUE)
-          falsely_imputed_total <- falsely_imputed_total + falsely_imputed
-          
-          # RMSE using Cramér’s V
-          v_sim <- numeric()
-          v_imp <- numeric()
-          for (j in 1:(m - 1)) {
-            for (k in (j + 1):m) {
-              sim_table <- table(df0[[j]], df0[[k]])
-              imp_table <- table(imputed_data[[j]], imputed_data[[k]])
-              v_sim <- c(v_sim, assocstats(sim_table)$cramer)
-              v_imp <- c(v_imp, assocstats(imp_table)$cramer)
-            }
-          }
-          rmse <- sqrt(2 / (m * (m - 1)) * sum((v_imp - v_sim)^2, na.rm = TRUE))
-          rmse_values[i] <- rmse
         }
-        
-        # Step 4: Store results
-        pfc <- round(falsely_imputed_total / (n * m * reps), 4)
-        mean_rmse <- round(mean(rmse_values, na.rm = TRUE), 4)
-        
-        new_row <- data.frame(
-          mechanism = toupper(mech),
-          wiederholungen = reps,
-          n = n,
-          m = m,
-          rho_1 = rho_val,
-          verteilung = "gleich",
-          Ausprägungen = "wenig",
-          p_miss = p_miss,
-          pfc = pfc,
-          mean_rmse = mean_rmse
-        )
-        simulation_summary <- rbind(simulation_summary, new_row)
-        cat("Done: m =", m, "rho =", rho_val, "p =", p_miss, "mech =", toupper(mech), "\n")
       }
     }
   }
 }
 
-# Final result
-print(simulation_summary)
+#–– 5. Compute per‐rep error rates ––
+rep_summary <- simulation_summary %>%
+  group_by(rep, n, m, rho, p, levels, dist_form, mechanism) %>%
+  summarise(
+    total_false = sum(false_count),
+    error_rate  = total_false / (m * n),
+    .groups = "drop"
+  )
+
+#–– 6. Average over replicates ––
+final_summary <- rep_summary %>%
+  group_by(n, m, rho, p, levels, dist_form, mechanism) %>%
+  summarise(
+    mean_error_rate = mean(error_rate),
+    sd_error_rate   = sd(error_rate),
+    .groups = "drop"
+  )
+
+#–– 7. Inspect results ––
+end_time <- Sys.time()
+run_time <- end_time-start_time
+print(run_time)
+
+print(final_summary)
