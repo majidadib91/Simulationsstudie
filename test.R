@@ -1,23 +1,34 @@
-# chat gpt with all variables
-#Mar not precise
-#missForest and Hot deck to be added
+#test completely for HD missForest and VA.
+#all variables and VA are added.
 # Load required libraries
+library(missForest)
+library(missForest)
 library(missMethods)
 library(SimCorrMix)
 library(vcd)
 library(dplyr)
+library(VIM)         # for random hot-deck
 
 #–– 1. Define simulation parameters ––
-reps              <- 1
-n_values          <- c(100,500)          # e.g. c(100, 500)
-m_values          <- c(6,30)           # e.g. c(6, 30)
-rho_vals          <- c(0.1,0.4,0.7)         # e.g. c(0.1, 0.4, 0.7)
-p_vals            <- seq(0.1,0.5,0.1)         # e.g. seq(0.1, 0.5, 0.1)
-level_scenarios   <- c("few", "many")
-dist_scenarios    <- c("balanced", "unbalanced")
-simulation_count  <-reps*length(n_values)*length(m_values)*length(rho_vals)*length(level_scenarios)*length(dist_scenarios)
+reps              <- 100
+#n_values         <- c(100, 500)
+n_values          <- c(100)
+#m_values         <- c(6, 30)
+m_values         <- c(6)
+#rho_vals         <- c(0.1, 0.4, 0.7)
+rho_vals         <- c(0.7)
+p_vals           <- seq(0.1, 0.5, 0.1)
+#level_scenarios  <- c("few", "many")
+level_scenarios  <- c("few")
+#dist_scenarios   <- c("balanced", "unbalanced")
+dist_scenarios   <- c("balanced")
+simulation_count <- reps *
+  length(n_values) *
+  length(m_values) *
+  length(rho_vals) *
+  length(level_scenarios) *
+  length(dist_scenarios)
 start_time <- Sys.time()
-
 
 #–– 2. Helpers ––
 
@@ -29,7 +40,7 @@ get_mode <- function(x) {
   names(tbl)[which.max(tbl)][1]
 }
 
-# 2b) mode‐imputation
+# 2b) mode-imputation
 impute_mode <- function(df) {
   df_imp <- df
   for (j in seq_along(df_imp)) {
@@ -39,74 +50,86 @@ impute_mode <- function(df) {
   df_imp
 }
 
-# 2c) count false imputations
+
+
+# 2d) count false imputations
 count_false <- function(orig, deleted, imputed) {
   mask <- is.na(deleted)
   sum(imputed[mask] != orig[mask])
 }
 
-# 2d) build marginal CDF for one variable
+# 2e) build marginal CDF
 make_marginal <- function(k, balanced = TRUE) {
   if (balanced) {
     probs <- rep(1/k, k)
   } else {
-    # first k−1 levels get 0.1 each, last level takes the rest
     probs <- c(rep(0.1, k-1), 1 - 0.1*(k-1))
   }
   cumsum(probs) - 1e-10
 }
 
-#–– 3. Prepare storage for raw false‐counts ––
+# 2f) calculate variables distribution
+
+compute_VA <- function(orig_df, imp_df){
+  total_va <- 0
+  for ( k in delete_cols){
+    tab_sim <- table(orig_df[[k]])
+    tab_imp <- table(imp_df[[k]])
+    cats    <- union(names(tab_sim), names(tab_imp))
+    
+    # 3) relative frequencies
+    
+    f_sim <- as.numeric(tab_sim[cats]) / n
+    f_imp <- as.numeric(tab_imp[cats]) / n
+    f_sim[is.na(f_sim)] <- 0
+    f_imp[is.na(f_imp)] <- 0
+    dk <- sum(abs(f_imp - f_sim))/2
+    total_va <- dk + total_va
+  }
+  total_va <- total_va/(m/2)
+}
+
+
+
+
+
+
+
+#–– 3. Prepare storage ––
 simulation_summary <- data.frame(
-  rep         = integer(),
-  n           = integer(),
-  m           = integer(),
-  rho         = numeric(),
-  p           = numeric(),
-  levels      = character(),   # "few" or "many"
-  dist_form   = character(),   # "balanced" or "unbalanced"
-  mechanism   = character(),   # "MCAR", "MAR", "MNAR"
-  false_count = integer(),
+  rep           = integer(),
+  n             = integer(),
+  m             = integer(),
+  rho           = numeric(),
+  p             = numeric(),
+  levels        = character(),
+  dist_form     = character(),
+  mechanism     = character(),
+  method        = character(),   # "Mode" or "HotDeck"
+  false_count   = integer(),
+  va           = numeric(),
   stringsAsFactors = FALSE
 )
 
-#–– 4. Main simulation loops ––
+#–– 4. Main simulation ––
 for (rep in seq_len(reps)) {
   set.seed(1233 + rep)
-  
   for (n in n_values) for (m in m_values) {
-    
-    # which columns to delete
     delete_cols <- seq(2, m, by = 2)
-    
     for (levels_sce in level_scenarios) {
-      # choose how many levels each variable has
-      if (levels_sce == "few") {
-        levels_vec <- sample(2:4, m, replace = TRUE)
-      } else {
-        levels_vec <- sample(5:7, m, replace = TRUE)
-      }
-      
+      levels_vec <- if (levels_sce == "few") sample(2:4, m, TRUE)
+      else                sample(5:7, m, TRUE)
       for (dist_sce in dist_scenarios) {
-        # build marginal CDFs for each variable
         balanced_flag <- (dist_sce == "balanced")
-        marginal_list <- mapply(
-          make_marginal,
-          k        = levels_vec,
-          balanced = balanced_flag,
-          SIMPLIFY = FALSE
-        )
+        marginal_list <- mapply(make_marginal,
+                                k        = levels_vec,
+                                balanced = balanced_flag,
+                                SIMPLIFY = FALSE)
         support_list <- lapply(levels_vec, seq_len)
-        
         for (rho in rho_vals) {
-          # build correlation matrix
-          rho_mat <- matrix(rho, nrow = m, ncol = m)
-          diag(rho_mat) <- 1
-          
-          # generate complete categorical data
+          rho_mat <- matrix(rho, m, m); diag(rho_mat) <- 1
           sim <- corrvar2(
-            k_cat    = m,
-            k_cont   = 0,
+            k_cat    = m, k_cont = 0,
             marginal = marginal_list,
             support  = support_list,
             method   = "Polynomial",
@@ -116,58 +139,83 @@ for (rep in seq_len(reps)) {
           complete_data <- as.data.frame(sim$Y_cat)
           complete_data[] <- lapply(complete_data, factor)
           
-          #print remaining datasets count
-          cat("Remaining Datasets:")
-          simulation_count <- simulation_count-1
-          print(simulation_count)
+          # progress counter
+          cat("Remaining complete‐data scenarios:", simulation_count, "\n")
+          simulation_count <- simulation_count - 1
           
           for (p_miss in p_vals) {
-            # apply missingness
-            df_mcar <- delete_MCAR  (complete_data, p = p_miss, cols_mis = delete_cols)
-            df_mar  <- delete_MAR_1_to_x(complete_data, p = p_miss,
-                                         cols_mis = delete_cols,
-                                         cols_ctrl = delete_cols - 1, x = 3)
-            df_mnar <- delete_MNAR_1_to_x(complete_data, p = p_miss,
-                                          cols_mis = delete_cols, x = 3)
-            
-            # impute
-            imp_mcar <- impute_mode(df_mcar)
-            imp_mar  <- impute_mode(df_mar)
-            imp_mnar <- impute_mode(df_mnar)
-            
-            # count errors
-            f_mcar <- count_false(complete_data, df_mcar, imp_mcar)
-            f_mar  <- count_false(complete_data, df_mar,  imp_mar)
-            f_mnar <- count_false(complete_data, df_mnar, imp_mnar)
-            
-            # record
-            simulation_summary <- bind_rows(
-              simulation_summary,
-              data.frame(
-                rep         = rep, n = n, m = m, rho = rho, p = p_miss,
-                levels      = levels_sce,
-                dist_form   = dist_sce,
-                mechanism   = "MCAR",
-                false_count = f_mcar,
-                stringsAsFactors = FALSE
-              ),
-              data.frame(
-                rep         = rep, n = n, m = m, rho = rho, p = p_miss,
-                levels      = levels_sce,
-                dist_form   = dist_sce,
-                mechanism   = "MAR",
-                false_count = f_mar,
-                stringsAsFactors = FALSE
-              ),
-              data.frame(
-                rep         = rep, n = n, m = m, rho = rho, p = p_miss,
-                levels      = levels_sce,
-                dist_form   = dist_sce,
-                mechanism   = "MNAR",
-                false_count = f_mnar,
-                stringsAsFactors = FALSE
-              )
+            # 4a) introduce missingness
+            df_list <- list(
+              MCAR = delete_MCAR(complete_data, p = p_miss, cols_mis = delete_cols),
+              MAR  = delete_MAR_1_to_x(complete_data, p = p_miss,
+                                       cols_mis  = delete_cols,
+                                       cols_ctrl = delete_cols - 1, x = 3),
+              MNAR = delete_MNAR_1_to_x(complete_data, p = p_miss,
+                                        cols_mis = delete_cols, x = 3)
             )
+            
+            # 4b) for each mechanism, impute both ways & count errors
+            
+            for (mech in names(df_list)) {
+              deleted_df <- df_list[[mech]]
+              
+              # mode
+              imp_mode <- impute_mode(deleted_df)
+              f_mode   <- count_false(complete_data, deleted_df, imp_mode)
+              va_mode  <- compute_VA(complete_data,imp_mode)
+              
+              # hot-deck
+              #check dom var
+              imp_hd   <- hotdeck(deleted_df,imp_var = FALSE) 
+              f_hd     <- count_false(complete_data, deleted_df, imp_hd)
+              va_hd    <- compute_VA(complete_data,imp_hd)
+              
+              #missForest
+              imp_mf         <- missForest(deleted_df, verbose = FALSE)
+              completed_mf   <- imp_mf$ximp
+              completed_mf[] <- lapply(completed_mf, factor)
+              f_mf           <- count_false(complete_data, deleted_df, completed_mf)
+              va_mf          <- compute_VA(complete_data,completed_mf)
+              
+              
+              # record both
+              simulation_summary <- bind_rows(
+                simulation_summary,
+                data.frame(
+                  rep           = rep,   n       = n,    m      = m,
+                  rho           = rho,   p       = p_miss,
+                  levels        = levels_sce,
+                  dist_form     = dist_sce,
+                  mechanism     = mech,
+                  method        = "Mode",
+                  false_count   = f_mode,
+                  va_ab         = va_mode,
+                  stringsAsFactors = FALSE
+                ),
+                data.frame(
+                  rep           = rep,   n       = n,    m      = m,
+                  rho           = rho,   p       = p_miss,
+                  levels        = levels_sce,
+                  dist_form     = dist_sce,
+                  mechanism     = mech,
+                  method        = "HotDeck",
+                  false_count   = f_hd,
+                  va_ab         = va_hd,
+                  stringsAsFactors = FALSE
+                ),
+                data.frame(
+                  rep           = rep,   n        = n,    m     = m,
+                  rho           = rho,   p        = p_miss,
+                  levels        = levels_sce,
+                  dist_form     = dist_sce,
+                  mechanism     = mech,
+                  method        = "MissForest",
+                  false_count   = f_mf,
+                  va_ab         = va_mf ,
+                  stringsAsFactors = FALSE
+                )
+              )
+            }
           }
         }
       }
@@ -175,27 +223,42 @@ for (rep in seq_len(reps)) {
   }
 }
 
-#–– 5. Compute per‐rep error rates ––
+#–– 5. Summarise per‐rep error‐rates ––
 rep_summary <- simulation_summary %>%
-  group_by(rep, n, m, rho, p, levels, dist_form, mechanism) %>%
+  group_by(rep, n, m, rho, p, levels, dist_form, mechanism, method) %>%
   summarise(
-    total_false = sum(false_count),
-    error_rate  = total_false / (m * n),
-    .groups = "drop"
+    total_false   = sum(false_count),
+    error_rate    = total_false / (m * n),
+    va_abweichung = mean(va_ab),
+    .groups       = "drop"
   )
 
-#–– 6. Average over replicates ––
+#–– 6. Average across replicates, wide for the two methods ––
 final_summary <- rep_summary %>%
   group_by(n, m, rho, p, levels, dist_form, mechanism) %>%
   summarise(
-    mean_error_rate = mean(error_rate),
-    sd_error_rate   = sd(error_rate),
-    .groups = "drop"
+    mean_error_mode       = mean(error_rate[method == "Mode"]),
+    mean_error_hotdeck    = mean(error_rate[method == "HotDeck"]),
+    mean_error_missforest = mean(error_rate[method == "MissForest"]),
+    mean_va_mode          = mean(va_abweichung[method == "Mode"]),
+    mean_va_hotdeck       = mean(va_abweichung[method == "HotDeck"]),
+    mean_va_missforest    = mean(va_abweichung[method == "MissForest"]),
+    .groups               = "drop"
   )
 
-#–– 7. Inspect results ––
+#–– 7. Done ––
 end_time <- Sys.time()
-run_time <- end_time-start_time
-print(run_time)
-
+cat("Total run-time:", end_time - start_time, "\n")
 print(final_summary)
+
+
+View(final_summary)
+
+
+
+
+
+
+
+
+
